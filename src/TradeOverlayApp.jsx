@@ -61,20 +61,10 @@ function fillTextTracked(ctx, text, x, y, spacing) {
   return cursor - spacing
 }
 
-/**
- * Draws the trade overlay onto a canvas: symbol, a solid PnL pill, and plain
- * stat rows underneath, sitting on a soft gradient scrim for legibility.
- * Reused for both the live preview canvas and the full-resolution overlay
- * PNG fed to FFmpeg.
- */
-function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
-  ctx.clearRect(0, 0, canvasWidth, canvasHeight)
+const OVERLAY_STYLES = ['Minimal', 'Card', 'Bold']
+const ORIENTATIONS = ['Auto', 'Landscape', 'Portrait']
 
-  const isProfit = Number(trade.pnl) >= 0
-  const accent = isProfit ? '#4ade80' : '#f87171'
-  const pillBg = isProfit ? '#86efac' : '#fca5a5'
-  const unit = Math.max(canvasWidth, canvasHeight) * 0.012
-
+function buildStatRows(trade) {
   const rows = [
     {
       label: trade.tradeType === 'Option' ? 'CONTRACTS' : 'SHARES',
@@ -85,8 +75,65 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
   ]
   if (trade.tradeType === 'Option') {
     rows.push({ label: 'STRIKE', value: trade.strike ? `$${trade.strike}` : '-' })
+    if (trade.entryCredit !== '' && trade.entryCredit != null) {
+      rows.push({ label: 'ENTRY', value: formatCurrency(trade.entryCredit) })
+    }
+    if (trade.exitCredit !== '' && trade.exitCredit != null) {
+      rows.push({ label: 'EXIT', value: formatCurrency(trade.exitCredit) })
+    }
     rows.push({ label: 'EXPIRATION', value: trade.expiration || '-' })
   }
+  return rows
+}
+
+function drawScrim(ctx, canvasWidth, scrimHeight, scrimWidth) {
+  const vScrim = ctx.createLinearGradient(0, 0, 0, scrimHeight)
+  vScrim.addColorStop(0, 'rgba(0, 0, 0, 0.55)')
+  vScrim.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  const hScrim = ctx.createLinearGradient(0, 0, scrimWidth, 0)
+  hScrim.addColorStop(0, 'rgba(0, 0, 0, 0.42)')
+  hScrim.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.save()
+  ctx.fillStyle = vScrim
+  ctx.fillRect(0, 0, canvasWidth, scrimHeight)
+  ctx.globalCompositeOperation = 'multiply'
+  ctx.fillStyle = hScrim
+  ctx.fillRect(0, 0, scrimWidth, scrimHeight)
+  ctx.restore()
+}
+
+function drawPill(ctx, x, y, width, height, bg, radius) {
+  ctx.save()
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.4)'
+  ctx.shadowBlur = 14
+  ctx.shadowOffsetY = 4
+  ctx.fillStyle = bg
+  drawRoundedRect(ctx, x, y, width, height, radius ?? height * 0.22)
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawDirectionDot(ctx, x, y, r, direction) {
+  ctx.beginPath()
+  ctx.fillStyle = direction === 'Short' ? '#f87171' : '#4ade80'
+  ctx.arc(x + r, y, r, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+function drawWatermark(ctx, canvasWidth, canvasHeight, unit, align = 'right') {
+  withTextShadow(ctx, () => {
+    ctx.font = `700 ${Math.round(unit * 1.1)}px ${FONT}`
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)'
+    ctx.textAlign = align
+    const x = align === 'right' ? canvasWidth - unit * 1.6 : canvasWidth / 2
+    ctx.fillText('bruhtrade', x, canvasHeight - unit * 2.4)
+    ctx.textAlign = 'left'
+  })
+}
+
+// "Minimal": symbol + solid PnL pill, top-left, plain tracked stat rows below.
+function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
+  const { isPortrait, isProfit, accent, pillBg, unit, rows } = ctxInfo
 
   const marginX = unit * 2.4
   const marginTop = unit * 2.6
@@ -97,29 +144,11 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
   const rowGap = valueFont * 1.9
   const pillPaddingX = unit * 1.7
   const pillPaddingY = unit * 1.15
-  const labelValueGap = unit * 0.5
-  const valueColX = marginX + unit * 12
+  const valueColX = marginX + unit * (isPortrait ? 8.6 : 12)
 
-  // Soft gradient scrim behind the whole block so text stays legible on any footage.
-  const scrimHeight =
-    marginTop +
-    symbolFont * 1.3 +
-    pnlFont * 1.5 +
-    rowGap * (rows.length + 0.6)
-  const scrimWidth = Math.min(canvasWidth * 0.62, valueColX + unit * 20)
-  const scrim = ctx.createLinearGradient(0, 0, 0, scrimHeight)
-  scrim.addColorStop(0, 'rgba(0, 0, 0, 0.55)')
-  scrim.addColorStop(1, 'rgba(0, 0, 0, 0)')
-  const scrimH = ctx.createLinearGradient(0, 0, scrimWidth, 0)
-  scrimH.addColorStop(0, 'rgba(0, 0, 0, 0.42)')
-  scrimH.addColorStop(1, 'rgba(0, 0, 0, 0)')
-  ctx.save()
-  ctx.fillStyle = scrim
-  ctx.fillRect(0, 0, canvasWidth, scrimHeight)
-  ctx.globalCompositeOperation = 'multiply'
-  ctx.fillStyle = scrimH
-  ctx.fillRect(0, 0, scrimWidth, scrimHeight)
-  ctx.restore()
+  const scrimHeight = marginTop + symbolFont * 1.3 + pnlFont * 1.5 + rowGap * (rows.length + 0.6)
+  const scrimWidth = Math.min(canvasWidth * (isPortrait ? 0.92 : 0.62), valueColX + unit * (isPortrait ? 13 : 20))
+  drawScrim(ctx, canvasWidth, scrimHeight, scrimWidth)
 
   let cursorY = marginTop
   ctx.textBaseline = 'top'
@@ -138,15 +167,7 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
   const pillWidth = pnlTextWidth + pillPaddingX * 2
   const pillHeight = pnlFont + pillPaddingY * 2
 
-  ctx.save()
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.4)'
-  ctx.shadowBlur = 14
-  ctx.shadowOffsetY = 4
-  ctx.fillStyle = pillBg
-  drawRoundedRect(ctx, marginX, cursorY, pillWidth, pillHeight, pillHeight * 0.22)
-  ctx.fill()
-  ctx.restore()
-
+  drawPill(ctx, marginX, cursorY, pillWidth, pillHeight, pillBg)
   ctx.fillStyle = isProfit ? '#052e16' : '#450a0a'
   ctx.fillText(pnlText, marginX + pillPaddingX, cursorY + pillPaddingY)
   cursorY += pillHeight + rowGap * 0.5
@@ -160,11 +181,7 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
       let valueX = valueColX
       if (row.dot) {
         const dotR = valueFont * 0.16
-        const dotY = cursorY + valueFont / 2
-        ctx.beginPath()
-        ctx.fillStyle = row.value === 'Short' ? '#f87171' : '#4ade80'
-        ctx.arc(valueX + dotR, dotY, dotR, 0, Math.PI * 2)
-        ctx.fill()
+        drawDirectionDot(ctx, valueX, cursorY + valueFont / 2, dotR, row.value)
         valueX += dotR * 2 + unit * 0.7
       }
 
@@ -175,13 +192,201 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
     cursorY += rowGap
   }
 
-  withTextShadow(ctx, () => {
-    ctx.font = `700 ${Math.round(unit * 1.1)}px ${FONT}`
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)'
-    ctx.textAlign = 'right'
-    ctx.fillText('bruhtrade', canvasWidth - unit * 1.6, canvasHeight - unit * 2.4)
-    ctx.textAlign = 'left'
+  drawWatermark(ctx, canvasWidth, canvasHeight, unit)
+}
+
+// "Card": a solid rounded panel with an accent edge and a stat grid. Sits at
+// the bottom for landscape (lower-third style) and up top for portrait,
+// since the bottom of vertical clips is usually covered by captions/UI.
+function drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
+  const { isPortrait, isProfit, accent, unit, rows } = ctxInfo
+
+  const padding = unit * 2.2
+  const symbolFont = Math.round(unit * 2.4)
+  const pnlFont = Math.round(unit * 3.4)
+  const labelFont = Math.round(unit * 1.05)
+  const valueFont = Math.round(unit * 1.5)
+  const rowGap = (labelFont + valueFont) * 1.3
+
+  // Two columns once there are enough rows (e.g. options with entry/exit
+  // credit) that a single column would stretch the panel too tall.
+  const cols = isPortrait || rows.length > 4 ? 2 : 1
+  const rowsPerCol = Math.ceil(rows.length / cols)
+  const cardWidth = isPortrait
+    ? canvasWidth * 0.9
+    : Math.min(canvasWidth * (cols === 2 ? 0.6 : 0.46), unit * (cols === 2 ? 70 : 54))
+  const colWidth = (cardWidth - padding * 2) / cols
+  const headerHeight = symbolFont * 1.25 + unit * 0.7 + pnlFont * 1.3 + unit * 1.2
+  const cardHeight = padding * 2 + headerHeight + rowsPerCol * rowGap
+
+  const cardX = isPortrait ? (canvasWidth - cardWidth) / 2 : unit * 2.2
+  const cardY = isPortrait ? unit * 2.4 : canvasHeight - cardHeight - unit * 2.4
+
+  ctx.save()
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)'
+  ctx.shadowBlur = 24
+  ctx.shadowOffsetY = 6
+  ctx.fillStyle = 'rgba(10, 12, 16, 0.7)'
+  drawRoundedRect(ctx, cardX, cardY, cardWidth, cardHeight, unit * 1.6)
+  ctx.fill()
+  ctx.restore()
+
+  ctx.save()
+  ctx.fillStyle = accent
+  drawRoundedRect(ctx, cardX, cardY, unit * 0.6, cardHeight, unit * 0.3)
+  ctx.fill()
+  ctx.restore()
+
+  let cursorY = cardY + padding
+  const textX = cardX + padding
+  ctx.textBaseline = 'top'
+
+  ctx.font = `800 ${symbolFont}px ${FONT}`
+  ctx.fillStyle = '#ffffff'
+  ctx.fillText(trade.symbol || 'SYMBOL', textX, cursorY)
+  cursorY += symbolFont * 1.25 + unit * 0.7
+
+  ctx.font = `800 ${pnlFont}px ${FONT}`
+  ctx.fillStyle = accent
+  const arrow = isProfit ? '▲' : '▼'
+  ctx.fillText(`${arrow} ${formatCurrency(trade.pnl)}`, textX, cursorY)
+  cursorY += pnlFont * 1.3 + unit * 1.2
+
+  const gridTop = cursorY
+  rows.forEach((row, i) => {
+    const col = Math.floor(i / rowsPerCol)
+    const rowInCol = i % rowsPerCol
+    const x = textX + col * colWidth
+    const labelY = gridTop + rowInCol * rowGap
+    const valueY = labelY + labelFont * 1.35
+
+    ctx.font = `700 ${labelFont}px ${FONT}`
+    ctx.fillStyle = '#9ca3af'
+    fillTextTracked(ctx, row.label, x, labelY, unit * 0.14)
+
+    let valueX = x
+    if (row.dot) {
+      const dotR = valueFont * 0.15
+      drawDirectionDot(ctx, valueX, valueY + valueFont / 2, dotR, row.value)
+      valueX += dotR * 2 + unit * 0.6
+    }
+    ctx.font = `700 ${valueFont}px ${FONT}`
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(row.value, valueX, valueY)
   })
+
+  drawWatermark(ctx, canvasWidth, canvasHeight, unit)
+}
+
+function layoutStatsLines(ctx, rows, font, maxWidth) {
+  ctx.font = font
+  const sep = '   •   '
+  const tokens = rows.map((r) => `${r.label}  ${r.value}`)
+  const lines = []
+  let current = ''
+  for (const token of tokens) {
+    const candidate = current ? current + sep + token : token
+    if (current && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(current)
+      current = token
+    } else {
+      current = candidate
+    }
+  }
+  if (current) lines.push(current)
+  return lines
+}
+
+// "Bold": big centered statement — symbol, huge PnL, stats line below.
+// Anchored near the top for portrait so it reads well on vertical clips
+// without competing with bottom-of-screen captions/UI.
+function drawBoldStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
+  const { isPortrait, isProfit, accent, unit, rows } = ctxInfo
+
+  const symbolFont = Math.round(unit * (isPortrait ? 2.6 : 2.4))
+  const pnlFont = Math.round(unit * (isPortrait ? 6.4 : 5.6))
+  const statsFont = Math.round(unit * 1.5)
+  const centerX = canvasWidth / 2
+  const maxWidth = canvasWidth * 0.9
+
+  ctx.font = `700 ${statsFont}px ${FONT}`
+  const statLines = layoutStatsLines(ctx, rows, `700 ${statsFont}px ${FONT}`, maxWidth)
+
+  const blockHeight = symbolFont * 1.4 + pnlFont * 1.3 + statLines.length * statsFont * 1.6 + unit * 2
+  const anchorY = isPortrait ? unit * 3.2 : canvasHeight / 2 - blockHeight / 2
+
+  const scrimHeight = anchorY + blockHeight + unit * 2
+  ctx.save()
+  const scrim = ctx.createLinearGradient(0, 0, 0, scrimHeight)
+  scrim.addColorStop(0, 'rgba(0, 0, 0, 0.5)')
+  scrim.addColorStop(1, 'rgba(0, 0, 0, 0.05)')
+  ctx.fillStyle = scrim
+  ctx.fillRect(0, Math.max(0, anchorY - unit * 2), canvasWidth, scrimHeight)
+  ctx.restore()
+
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'top'
+  let cursorY = anchorY
+
+  withTextShadow(ctx, () => {
+    ctx.font = `800 ${symbolFont}px ${FONT}`
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+    ctx.fillText((trade.symbol || 'SYMBOL').toUpperCase(), centerX, cursorY)
+  })
+  cursorY += symbolFont * 1.4
+
+  withTextShadow(ctx, () => {
+    ctx.font = `800 ${pnlFont}px ${FONT}`
+    ctx.fillStyle = accent
+    const arrow = isProfit ? '▲' : '▼'
+    ctx.fillText(`${arrow} ${formatCurrency(trade.pnl)}`, centerX, cursorY)
+  })
+  cursorY += pnlFont * 1.3
+
+  for (const line of statLines) {
+    withTextShadow(ctx, () => {
+      ctx.font = `700 ${statsFont}px ${FONT}`
+      ctx.fillStyle = '#e5e7eb'
+      ctx.fillText(line, centerX, cursorY)
+    })
+    cursorY += statsFont * 1.6
+  }
+
+  ctx.textAlign = 'left'
+  drawWatermark(ctx, canvasWidth, canvasHeight, unit, isPortrait ? 'center' : 'right')
+}
+
+/**
+ * Draws the trade overlay onto a canvas in one of several selectable
+ * styles, adapting position/scale to the video's orientation. Reused for
+ * both the live preview canvas and the full-resolution overlay PNG fed to
+ * FFmpeg. `orientation` lets the caller override the auto-detected
+ * landscape/portrait layout for videos whose framing doesn't match their
+ * raw pixel dimensions (e.g. a horizontally-shot TikTok clip you still
+ * want laid out as portrait, or vice versa).
+ */
+function drawOverlay(ctx, canvasWidth, canvasHeight, trade, style = 'Minimal', orientation = 'Auto') {
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight)
+
+  const isPortrait =
+    orientation === 'Portrait'
+      ? true
+      : orientation === 'Landscape'
+        ? false
+        : canvasHeight > canvasWidth
+  const isProfit = Number(trade.pnl) >= 0
+  const accent = isProfit ? '#4ade80' : '#f87171'
+  const pillBg = isProfit ? '#86efac' : '#fca5a5'
+  // Scale off the constraining dimension so text stays proportionate in
+  // both landscape (16:9-ish) and portrait (9:16-ish, e.g. TikTok) video.
+  const unit = Math.min(canvasWidth, canvasHeight) * 0.02
+  const rows = buildStatRows(trade)
+
+  const ctxInfo = { isPortrait, isProfit, accent, pillBg, unit, rows }
+
+  if (style === 'Card') drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
+  else if (style === 'Bold') drawBoldStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
+  else drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
 }
 
 async function canvasToPngBlob(canvas) {
@@ -201,8 +406,12 @@ export default function TradeOverlayApp() {
   const [tradeType, setTradeType] = useState('Stock')
   const [strike, setStrike] = useState('')
   const [expiration, setExpiration] = useState('')
+  const [entryCredit, setEntryCredit] = useState('')
+  const [exitCredit, setExitCredit] = useState('')
   const [durationValue, setDurationValue] = useState('15')
   const [durationUnit, setDurationUnit] = useState('m')
+  const [overlayStyle, setOverlayStyle] = useState('Minimal')
+  const [overlayOrientation, setOverlayOrientation] = useState('Auto')
 
   const [videoFile, setVideoFile] = useState(null)
   const [videoUrl, setVideoUrl] = useState(null)
@@ -231,6 +440,8 @@ export default function TradeOverlayApp() {
     tradeType,
     strike,
     expiration,
+    entryCredit,
+    exitCredit,
     durationDisplay,
   }
 
@@ -250,7 +461,7 @@ export default function TradeOverlayApp() {
     canvas.width = videoMeta.width
     canvas.height = videoMeta.height
     const ctx = canvas.getContext('2d')
-    drawOverlay(ctx, videoMeta.width, videoMeta.height, trade)
+    drawOverlay(ctx, videoMeta.width, videoMeta.height, trade, overlayStyle, overlayOrientation)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     symbol,
@@ -260,10 +471,14 @@ export default function TradeOverlayApp() {
     tradeType,
     strike,
     expiration,
+    entryCredit,
+    exitCredit,
     durationValue,
     durationUnit,
     videoMeta,
     fontsReady,
+    overlayStyle,
+    overlayOrientation,
   ])
 
   useEffect(() => {
@@ -383,7 +598,7 @@ export default function TradeOverlayApp() {
       const overlayCanvas = document.createElement('canvas')
       overlayCanvas.width = videoMeta.width
       overlayCanvas.height = videoMeta.height
-      drawOverlay(overlayCanvas.getContext('2d'), videoMeta.width, videoMeta.height, trade)
+      drawOverlay(overlayCanvas.getContext('2d'), videoMeta.width, videoMeta.height, trade, overlayStyle, overlayOrientation)
       const overlayBlob = await canvasToPngBlob(overlayCanvas)
 
       setStatusMessage('Compositing overlay onto video (this can take a bit)...')
@@ -427,7 +642,7 @@ export default function TradeOverlayApp() {
       setStatusMessage(`Something went wrong while processing: ${err.message || err}`)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoFile, videoMeta, trade, getFfmpeg])
+  }, [videoFile, videoMeta, trade, overlayStyle, overlayOrientation, getFfmpeg])
 
   const canGenerate =
     !!videoFile && !!videoMeta && !fileError && status !== 'loading-engine' && status !== 'processing'
@@ -570,8 +785,78 @@ export default function TradeOverlayApp() {
                   className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1">Entry Credit ($)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={entryCredit}
+                  onChange={(e) => setEntryCredit(e.target.value)}
+                  placeholder="e.g. 1.20 received"
+                  className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1">Exit Credit ($)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={exitCredit}
+                  onChange={(e) => setExitCredit(e.target.value)}
+                  placeholder="e.g. -0.40 paid"
+                  className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <p className="col-span-2 text-xs text-gray-500">
+                Optional. Shown on the overlay as premium received/paid at open (Entry) and close (Exit) —
+                use negative numbers for debits.
+              </p>
             </div>
           )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Overlay Style</label>
+            <div className="flex gap-2">
+              {OVERLAY_STYLES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setOverlayStyle(s)}
+                  className={`flex-1 rounded-md px-3 py-2 font-medium border transition-colors ${
+                    overlayStyle === s
+                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400'
+                      : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Layout Orientation</label>
+            <div className="flex gap-2">
+              {ORIENTATIONS.map((o) => (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => setOverlayOrientation(o)}
+                  className={`flex-1 rounded-md px-3 py-2 font-medium border transition-colors ${
+                    overlayOrientation === o
+                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400'
+                      : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  {o}
+                </button>
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-gray-500">
+              Auto detects from the video's pixel dimensions. Override it if a clip is shot
+              horizontally/vertically but you want the other layout.
+            </p>
+          </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-400 mb-1">Trade Video</label>
