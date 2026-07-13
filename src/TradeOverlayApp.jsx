@@ -274,10 +274,7 @@ export default function TradeOverlayApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleFileChange = useCallback((e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
+  const applyVideoFile = useCallback((file) => {
     setOutputUrl(null)
     setStatus('idle')
     setFileError('')
@@ -298,6 +295,40 @@ export default function TradeOverlayApp() {
       return url
     })
   }, [])
+
+  const handleFileChange = useCallback(
+    (e) => {
+      const file = e.target.files?.[0]
+      if (!file) return
+      applyVideoFile(file)
+    },
+    [applyVideoFile],
+  )
+
+  const [tiktokUrl, setTiktokUrl] = useState('')
+  const [tiktokLoading, setTiktokLoading] = useState(false)
+
+  const handleTiktokFetch = useCallback(async () => {
+    const trimmed = tiktokUrl.trim()
+    if (!trimmed) return
+
+    setTiktokLoading(true)
+    setFileError('')
+    try {
+      const res = await fetch(`/api/tiktok-download?url=${encodeURIComponent(trimmed)}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.error || `Request failed (${res.status})`)
+      }
+      const blob = await res.blob()
+      const file = new File([blob], 'tiktok-video.mp4', { type: 'video/mp4' })
+      applyVideoFile(file)
+    } catch (err) {
+      setFileError(`Couldn't fetch that TikTok video: ${err.message}`)
+    } finally {
+      setTiktokLoading(false)
+    }
+  }, [tiktokUrl, applyVideoFile])
 
   const handleLoadedMetadata = useCallback(() => {
     const video = videoRef.current
@@ -551,6 +582,25 @@ export default function TradeOverlayApp() {
               className="w-full text-sm text-gray-400 file:mr-4 file:rounded-md file:border-0 file:bg-emerald-600 file:px-4 file:py-2 file:text-white file:font-medium hover:file:bg-emerald-500 file:cursor-pointer cursor-pointer"
             />
             <p className="mt-1 text-xs text-gray-500">Max 100MB, ~2 minutes.</p>
+
+            <div className="mt-3 flex gap-2">
+              <input
+                type="url"
+                value={tiktokUrl}
+                onChange={(e) => setTiktokUrl(e.target.value)}
+                placeholder="Or paste a TikTok video link..."
+                className="flex-1 rounded-md bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <button
+                type="button"
+                onClick={handleTiktokFetch}
+                disabled={!tiktokUrl.trim() || tiktokLoading}
+                className="rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm font-medium text-gray-200 transition-colors hover:border-gray-600 disabled:cursor-not-allowed disabled:text-gray-600"
+              >
+                {tiktokLoading ? 'Fetching...' : 'Fetch'}
+              </button>
+            </div>
+
             {fileError && <p className="mt-1 text-sm text-red-400">{fileError}</p>}
           </div>
 
