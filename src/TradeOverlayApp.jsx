@@ -45,48 +45,81 @@ const FONT = 'Inter, system-ui, -apple-system, sans-serif'
 
 function withTextShadow(ctx, fn) {
   ctx.save()
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.55)'
-  ctx.shadowBlur = 6
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.6)'
+  ctx.shadowBlur = 8
   ctx.shadowOffsetY = 1
   fn()
   ctx.restore()
 }
 
+function fillTextTracked(ctx, text, x, y, spacing) {
+  let cursor = x
+  for (const char of text) {
+    ctx.fillText(char, cursor, y)
+    cursor += ctx.measureText(char).width + spacing
+  }
+  return cursor - spacing
+}
+
 /**
  * Draws the trade overlay onto a canvas: symbol, a solid PnL pill, and plain
- * stat rows underneath. Reused for both the live preview canvas and the
- * full-resolution overlay PNG fed to FFmpeg.
+ * stat rows underneath, sitting on a soft gradient scrim for legibility.
+ * Reused for both the live preview canvas and the full-resolution overlay
+ * PNG fed to FFmpeg.
  */
 function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
   ctx.clearRect(0, 0, canvasWidth, canvasHeight)
 
   const isProfit = Number(trade.pnl) >= 0
-  const accent = isProfit ? '#22c55e' : '#ef4444'
+  const accent = isProfit ? '#4ade80' : '#f87171'
   const pillBg = isProfit ? '#86efac' : '#fca5a5'
   const unit = Math.max(canvasWidth, canvasHeight) * 0.012
 
   const rows = [
     {
-      label: trade.tradeType === 'Option' ? 'Contracts' : 'Shares',
+      label: trade.tradeType === 'Option' ? 'CONTRACTS' : 'SHARES',
       value: String(trade.contracts || 0),
     },
-    { label: 'Total P&L', value: formatCurrency(trade.pnl), accent: true },
-    { label: 'Duration', value: trade.durationDisplay || '-' },
-    { label: 'Direction', value: trade.direction || '-' },
+    { label: 'DURATION', value: trade.durationDisplay || '-' },
+    { label: 'DIRECTION', value: trade.direction || '-', dot: true },
   ]
   if (trade.tradeType === 'Option') {
-    rows.push({ label: 'Strike', value: trade.strike ? `$${trade.strike}` : '-' })
-    rows.push({ label: 'Expiration', value: trade.expiration || '-' })
+    rows.push({ label: 'STRIKE', value: trade.strike ? `$${trade.strike}` : '-' })
+    rows.push({ label: 'EXPIRATION', value: trade.expiration || '-' })
   }
 
-  const marginX = unit * 2.2
-  const marginTop = unit * 2.4
-  const symbolFont = Math.round(unit * 3.4)
-  const pnlFont = Math.round(unit * 4.4)
-  const rowFont = Math.round(unit * 1.7)
-  const rowGap = rowFont * 1.65
-  const pillPaddingX = unit * 1.6
-  const pillPaddingY = unit * 1.1
+  const marginX = unit * 2.4
+  const marginTop = unit * 2.6
+  const symbolFont = Math.round(unit * 3.2)
+  const pnlFont = Math.round(unit * 4.6)
+  const labelFont = Math.round(unit * 1.15)
+  const valueFont = Math.round(unit * 1.7)
+  const rowGap = valueFont * 1.9
+  const pillPaddingX = unit * 1.7
+  const pillPaddingY = unit * 1.15
+  const labelValueGap = unit * 0.5
+  const valueColX = marginX + unit * 12
+
+  // Soft gradient scrim behind the whole block so text stays legible on any footage.
+  const scrimHeight =
+    marginTop +
+    symbolFont * 1.3 +
+    pnlFont * 1.5 +
+    rowGap * (rows.length + 0.6)
+  const scrimWidth = Math.min(canvasWidth * 0.62, valueColX + unit * 20)
+  const scrim = ctx.createLinearGradient(0, 0, 0, scrimHeight)
+  scrim.addColorStop(0, 'rgba(0, 0, 0, 0.55)')
+  scrim.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  const scrimH = ctx.createLinearGradient(0, 0, scrimWidth, 0)
+  scrimH.addColorStop(0, 'rgba(0, 0, 0, 0.42)')
+  scrimH.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.save()
+  ctx.fillStyle = scrim
+  ctx.fillRect(0, 0, canvasWidth, scrimHeight)
+  ctx.globalCompositeOperation = 'multiply'
+  ctx.fillStyle = scrimH
+  ctx.fillRect(0, 0, scrimWidth, scrimHeight)
+  ctx.restore()
 
   let cursorY = marginTop
   ctx.textBaseline = 'top'
@@ -99,36 +132,56 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade) {
   cursorY += symbolFont * 1.3
 
   ctx.font = `800 ${pnlFont}px ${FONT}`
-  const pnlText = formatCurrency(trade.pnl)
+  const arrow = isProfit ? '▲' : '▼'
+  const pnlText = `${arrow} ${formatCurrency(trade.pnl)}`
   const pnlTextWidth = ctx.measureText(pnlText).width
   const pillWidth = pnlTextWidth + pillPaddingX * 2
   const pillHeight = pnlFont + pillPaddingY * 2
 
   ctx.save()
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)'
-  ctx.shadowBlur = 10
-  ctx.shadowOffsetY = 3
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.4)'
+  ctx.shadowBlur = 14
+  ctx.shadowOffsetY = 4
   ctx.fillStyle = pillBg
-  drawRoundedRect(ctx, marginX, cursorY, pillWidth, pillHeight, unit * 1)
+  drawRoundedRect(ctx, marginX, cursorY, pillWidth, pillHeight, pillHeight * 0.22)
   ctx.fill()
   ctx.restore()
 
-  ctx.fillStyle = '#0a0a0a'
+  ctx.fillStyle = isProfit ? '#052e16' : '#450a0a'
   ctx.fillText(pnlText, marginX + pillPaddingX, cursorY + pillPaddingY)
-  cursorY += pillHeight + rowGap
+  cursorY += pillHeight + rowGap * 0.5
 
   for (const row of rows) {
     withTextShadow(ctx, () => {
-      ctx.font = `700 ${rowFont}px ${FONT}`
-      ctx.fillStyle = '#e5e7eb'
-      ctx.fillText(row.label, marginX, cursorY)
+      ctx.font = `700 ${labelFont}px ${FONT}`
+      ctx.fillStyle = '#9ca3af'
+      fillTextTracked(ctx, row.label, marginX, cursorY + (valueFont - labelFont) / 2 + unit * 0.15, unit * 0.16)
 
-      ctx.font = `700 ${rowFont}px ${FONT}`
-      ctx.fillStyle = row.accent ? accent : '#ffffff'
-      ctx.fillText(row.value, marginX + unit * 11, cursorY)
+      let valueX = valueColX
+      if (row.dot) {
+        const dotR = valueFont * 0.16
+        const dotY = cursorY + valueFont / 2
+        ctx.beginPath()
+        ctx.fillStyle = row.value === 'Short' ? '#f87171' : '#4ade80'
+        ctx.arc(valueX + dotR, dotY, dotR, 0, Math.PI * 2)
+        ctx.fill()
+        valueX += dotR * 2 + unit * 0.7
+      }
+
+      ctx.font = `700 ${valueFont}px ${FONT}`
+      ctx.fillStyle = '#ffffff'
+      ctx.fillText(row.value, valueX, cursorY)
     })
     cursorY += rowGap
   }
+
+  withTextShadow(ctx, () => {
+    ctx.font = `700 ${Math.round(unit * 1.1)}px ${FONT}`
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)'
+    ctx.textAlign = 'right'
+    ctx.fillText('bruhtrade', canvasWidth - unit * 1.6, canvasHeight - unit * 2.4)
+    ctx.textAlign = 'left'
+  })
 }
 
 async function canvasToPngBlob(canvas) {
