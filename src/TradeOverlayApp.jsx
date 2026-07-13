@@ -61,7 +61,7 @@ function fillTextTracked(ctx, text, x, y, spacing) {
   return cursor - spacing
 }
 
-const OVERLAY_STYLES = ['Minimal', 'Card', 'Bold']
+const OVERLAY_STYLES = ['Minimal', 'Card', 'Bold', 'Ticker']
 const ORIENTATIONS = ['Auto', 'Landscape', 'Portrait']
 
 function buildStatRows(trade) {
@@ -102,22 +102,114 @@ function drawScrim(ctx, canvasWidth, scrimHeight, scrimWidth) {
   ctx.restore()
 }
 
-function drawPill(ctx, x, y, width, height, bg, radius) {
+// Gradient-filled pill with a colored glow and a soft glossy highlight, used
+// for the PnL callout across styles.
+function drawPill(ctx, x, y, width, height, colorFrom, colorTo, glowColor, radius) {
+  const r = radius ?? height * 0.24
   ctx.save()
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.4)'
-  ctx.shadowBlur = 14
-  ctx.shadowOffsetY = 4
-  ctx.fillStyle = bg
-  drawRoundedRect(ctx, x, y, width, height, radius ?? height * 0.22)
+  ctx.shadowColor = glowColor
+  ctx.shadowBlur = height * 0.55
+  ctx.shadowOffsetY = height * 0.1
+  const grad = ctx.createLinearGradient(x, y, x, y + height)
+  grad.addColorStop(0, colorFrom)
+  grad.addColorStop(1, colorTo)
+  ctx.fillStyle = grad
+  drawRoundedRect(ctx, x, y, width, height, r)
+  ctx.fill()
+  ctx.restore()
+
+  ctx.save()
+  ctx.globalAlpha = 0.22
+  ctx.fillStyle = '#ffffff'
+  drawRoundedRect(ctx, x + width * 0.04, y + height * 0.08, width * 0.92, height * 0.3, height * 0.15)
   ctx.fill()
   ctx.restore()
 }
 
-function drawDirectionDot(ctx, x, y, r, direction) {
+// Circular badge with an up/down triangle glyph, replacing a plain dot.
+function drawDirectionBadge(ctx, x, y, r, direction) {
+  const isShort = direction === 'Short'
+  const bg = isShort ? '#f87171' : '#4ade80'
+  const fg = isShort ? '#450a0a' : '#052e16'
+  ctx.save()
+  ctx.fillStyle = bg
   ctx.beginPath()
-  ctx.fillStyle = direction === 'Short' ? '#f87171' : '#4ade80'
   ctx.arc(x + r, y, r, 0, Math.PI * 2)
   ctx.fill()
+
+  const t = r * 0.85
+  ctx.fillStyle = fg
+  ctx.beginPath()
+  if (isShort) {
+    ctx.moveTo(x + r - t * 0.55, y - t * 0.3)
+    ctx.lineTo(x + r + t * 0.55, y - t * 0.3)
+    ctx.lineTo(x + r, y + t * 0.5)
+  } else {
+    ctx.moveTo(x + r - t * 0.55, y + t * 0.3)
+    ctx.lineTo(x + r + t * 0.55, y + t * 0.3)
+    ctx.lineTo(x + r, y - t * 0.5)
+  }
+  ctx.closePath()
+  ctx.fill()
+  ctx.restore()
+}
+
+function drawGlow(ctx, x, y, radius, color) {
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, radius)
+  grad.addColorStop(0, color)
+  grad.addColorStop(1, 'rgba(0, 0, 0, 0)')
+  ctx.save()
+  ctx.fillStyle = grad
+  ctx.beginPath()
+  ctx.arc(x, y, radius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
+}
+
+function measureChip(ctx, row, font, paddingX) {
+  ctx.font = font
+  const text = `${row.label} ${row.value}`
+  return { text, width: ctx.measureText(text).width + paddingX * 2 }
+}
+
+function layoutChips(ctx, rows, font, maxWidth, paddingX, gap) {
+  const chips = rows.map((r) => measureChip(ctx, r, font, paddingX))
+  const lines = []
+  let current = []
+  let currentWidth = 0
+  for (const chip of chips) {
+    const added = chip.width + (current.length ? gap : 0)
+    if (current.length && currentWidth + added > maxWidth) {
+      lines.push(current)
+      current = [chip]
+      currentWidth = chip.width
+    } else {
+      current.push(chip)
+      currentWidth += added
+    }
+  }
+  if (current.length) lines.push(current)
+  return lines
+}
+
+function drawChipLine(ctx, chips, x, y, height, gap, textColor, bgColor, font, paddingX, align = 'left') {
+  const totalWidth = chips.reduce((sum, c) => sum + c.width, 0) + gap * (chips.length - 1)
+  let cursorX = align === 'center' ? x - totalWidth / 2 : x
+  for (const chip of chips) {
+    ctx.save()
+    ctx.fillStyle = bgColor
+    drawRoundedRect(ctx, cursorX, y, chip.width, height, height / 2)
+    ctx.fill()
+    ctx.restore()
+
+    ctx.font = font
+    ctx.fillStyle = textColor
+    ctx.textAlign = 'left'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(chip.text, cursorX + paddingX, y + height / 2 + 1)
+    cursorX += chip.width + gap
+  }
+  ctx.textBaseline = 'top'
 }
 
 function drawWatermark(ctx, canvasWidth, canvasHeight, unit, align = 'right') {
@@ -131,9 +223,10 @@ function drawWatermark(ctx, canvasWidth, canvasHeight, unit, align = 'right') {
   })
 }
 
-// "Minimal": symbol + solid PnL pill, top-left, plain tracked stat rows below.
+// "Minimal": accent-marked symbol + glowing gradient PnL pill, top-left,
+// tracked stat rows with direction badges below.
 function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
-  const { isPortrait, isProfit, accent, pillBg, unit, rows } = ctxInfo
+  const { isPortrait, isProfit, accent, pillFrom, pillTo, glow, unit, rows } = ctxInfo
 
   const marginX = unit * 2.4
   const marginTop = unit * 2.6
@@ -145,6 +238,7 @@ function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   const pillPaddingX = unit * 1.7
   const pillPaddingY = unit * 1.15
   const valueColX = marginX + unit * (isPortrait ? 8.6 : 12)
+  const markW = unit * 0.55
 
   const scrimHeight = marginTop + symbolFont * 1.3 + pnlFont * 1.5 + rowGap * (rows.length + 0.6)
   const scrimWidth = Math.min(canvasWidth * (isPortrait ? 0.92 : 0.62), valueColX + unit * (isPortrait ? 13 : 20))
@@ -153,10 +247,18 @@ function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   let cursorY = marginTop
   ctx.textBaseline = 'top'
 
+  ctx.save()
+  ctx.fillStyle = accent
+  ctx.shadowColor = accent
+  ctx.shadowBlur = unit * 1.2
+  drawRoundedRect(ctx, marginX, cursorY + symbolFont * 0.18, markW, symbolFont * 0.66, unit * 0.16)
+  ctx.fill()
+  ctx.restore()
+
   withTextShadow(ctx, () => {
     ctx.font = `800 ${symbolFont}px ${FONT}`
     ctx.fillStyle = '#ffffff'
-    ctx.fillText(trade.symbol || 'SYMBOL', marginX, cursorY)
+    ctx.fillText(trade.symbol || 'SYMBOL', marginX + markW + unit * 0.9, cursorY)
   })
   cursorY += symbolFont * 1.3
 
@@ -167,7 +269,7 @@ function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   const pillWidth = pnlTextWidth + pillPaddingX * 2
   const pillHeight = pnlFont + pillPaddingY * 2
 
-  drawPill(ctx, marginX, cursorY, pillWidth, pillHeight, pillBg)
+  drawPill(ctx, marginX, cursorY, pillWidth, pillHeight, pillFrom, pillTo, glow)
   ctx.fillStyle = isProfit ? '#052e16' : '#450a0a'
   ctx.fillText(pnlText, marginX + pillPaddingX, cursorY + pillPaddingY)
   cursorY += pillHeight + rowGap * 0.5
@@ -180,8 +282,8 @@ function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
 
       let valueX = valueColX
       if (row.dot) {
-        const dotR = valueFont * 0.16
-        drawDirectionDot(ctx, valueX, cursorY + valueFont / 2, dotR, row.value)
+        const dotR = valueFont * 0.18
+        drawDirectionBadge(ctx, valueX, cursorY + valueFont / 2, dotR, row.value)
         valueX += dotR * 2 + unit * 0.7
       }
 
@@ -195,9 +297,10 @@ function drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   drawWatermark(ctx, canvasWidth, canvasHeight, unit)
 }
 
-// "Card": a solid rounded panel with an accent edge and a stat grid. Sits at
-// the bottom for landscape (lower-third style) and up top for portrait,
-// since the bottom of vertical clips is usually covered by captions/UI.
+// "Card": a glass-look panel with a glowing accent edge, gradient PnL text,
+// and a stat grid. Sits at the bottom for landscape (lower-third style) and
+// up top for portrait, since the bottom of vertical clips is usually
+// covered by captions/UI.
 function drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   const { isPortrait, isProfit, accent, unit, rows } = ctxInfo
 
@@ -226,14 +329,26 @@ function drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   ctx.shadowColor = 'rgba(0, 0, 0, 0.5)'
   ctx.shadowBlur = 24
   ctx.shadowOffsetY = 6
-  ctx.fillStyle = 'rgba(10, 12, 16, 0.7)'
+  const panelGrad = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardHeight)
+  panelGrad.addColorStop(0, 'rgba(26, 28, 35, 0.8)')
+  panelGrad.addColorStop(1, 'rgba(8, 9, 12, 0.8)')
+  ctx.fillStyle = panelGrad
   drawRoundedRect(ctx, cardX, cardY, cardWidth, cardHeight, unit * 1.6)
   ctx.fill()
   ctx.restore()
 
   ctx.save()
+  ctx.strokeStyle = `${accent}55`
+  ctx.lineWidth = Math.max(1, unit * 0.09)
+  drawRoundedRect(ctx, cardX + 0.5, cardY + 0.5, cardWidth - 1, cardHeight - 1, unit * 1.6)
+  ctx.stroke()
+  ctx.restore()
+
+  ctx.save()
+  ctx.shadowColor = accent
+  ctx.shadowBlur = unit * 2
   ctx.fillStyle = accent
-  drawRoundedRect(ctx, cardX, cardY, unit * 0.6, cardHeight, unit * 0.3)
+  drawRoundedRect(ctx, cardX, cardY, unit * 0.5, cardHeight, unit * 0.25)
   ctx.fill()
   ctx.restore()
 
@@ -247,9 +362,13 @@ function drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   cursorY += symbolFont * 1.25 + unit * 0.7
 
   ctx.font = `800 ${pnlFont}px ${FONT}`
-  ctx.fillStyle = accent
   const arrow = isProfit ? '▲' : '▼'
-  ctx.fillText(`${arrow} ${formatCurrency(trade.pnl)}`, textX, cursorY)
+  const pnlText = `${arrow} ${formatCurrency(trade.pnl)}`
+  const pnlGrad = ctx.createLinearGradient(textX, 0, textX + ctx.measureText(pnlText).width, 0)
+  pnlGrad.addColorStop(0, isProfit ? '#4ade80' : '#f87171')
+  pnlGrad.addColorStop(1, isProfit ? '#a7f3d0' : '#fecaca')
+  ctx.fillStyle = pnlGrad
+  ctx.fillText(pnlText, textX, cursorY)
   cursorY += pnlFont * 1.3 + unit * 1.2
 
   const gridTop = cursorY
@@ -267,7 +386,7 @@ function drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
     let valueX = x
     if (row.dot) {
       const dotR = valueFont * 0.15
-      drawDirectionDot(ctx, valueX, valueY + valueFont / 2, dotR, row.value)
+      drawDirectionBadge(ctx, valueX, valueY + valueFont / 2, dotR, row.value)
       valueX += dotR * 2 + unit * 0.6
     }
     ctx.font = `700 ${valueFont}px ${FONT}`
@@ -278,41 +397,25 @@ function drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   drawWatermark(ctx, canvasWidth, canvasHeight, unit)
 }
 
-function layoutStatsLines(ctx, rows, font, maxWidth) {
-  ctx.font = font
-  const sep = '   •   '
-  const tokens = rows.map((r) => `${r.label}  ${r.value}`)
-  const lines = []
-  let current = ''
-  for (const token of tokens) {
-    const candidate = current ? current + sep + token : token
-    if (current && ctx.measureText(candidate).width > maxWidth) {
-      lines.push(current)
-      current = token
-    } else {
-      current = candidate
-    }
-  }
-  if (current) lines.push(current)
-  return lines
-}
-
-// "Bold": big centered statement — symbol, huge PnL, stats line below.
-// Anchored near the top for portrait so it reads well on vertical clips
-// without competing with bottom-of-screen captions/UI.
+// "Bold": big centered statement — symbol, huge glowing PnL, stat chips
+// below. Anchored near the top for portrait so it reads well on vertical
+// clips without competing with bottom-of-screen captions/UI.
 function drawBoldStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   const { isPortrait, isProfit, accent, unit, rows } = ctxInfo
 
   const symbolFont = Math.round(unit * (isPortrait ? 2.6 : 2.4))
   const pnlFont = Math.round(unit * (isPortrait ? 6.4 : 5.6))
-  const statsFont = Math.round(unit * 1.5)
+  const chipFont = Math.round(unit * 1.3)
+  const chipPaddingX = unit * 1.1
+  const chipGap = unit * 0.7
+  const chipHeight = chipFont * 2.1
   const centerX = canvasWidth / 2
   const maxWidth = canvasWidth * 0.9
 
-  ctx.font = `700 ${statsFont}px ${FONT}`
-  const statLines = layoutStatsLines(ctx, rows, `700 ${statsFont}px ${FONT}`, maxWidth)
+  const chipLines = layoutChips(ctx, rows, `700 ${chipFont}px ${FONT}`, maxWidth, chipPaddingX, chipGap)
 
-  const blockHeight = symbolFont * 1.4 + pnlFont * 1.3 + statLines.length * statsFont * 1.6 + unit * 2
+  const blockHeight =
+    symbolFont * 1.4 + pnlFont * 1.3 + chipLines.length * (chipHeight + unit * 0.6) + unit * 2
   const anchorY = isPortrait ? unit * 3.2 : canvasHeight / 2 - blockHeight / 2
 
   const scrimHeight = anchorY + blockHeight + unit * 2
@@ -335,6 +438,13 @@ function drawBoldStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   })
   cursorY += symbolFont * 1.4
 
+  drawGlow(
+    ctx,
+    centerX,
+    cursorY + pnlFont * 0.5,
+    pnlFont * 1.7,
+    isProfit ? 'rgba(74, 222, 128, 0.32)' : 'rgba(248, 113, 113, 0.32)',
+  )
   withTextShadow(ctx, () => {
     ctx.font = `800 ${pnlFont}px ${FONT}`
     ctx.fillStyle = accent
@@ -343,17 +453,109 @@ function drawBoldStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
   })
   cursorY += pnlFont * 1.3
 
-  for (const line of statLines) {
-    withTextShadow(ctx, () => {
-      ctx.font = `700 ${statsFont}px ${FONT}`
-      ctx.fillStyle = '#e5e7eb'
-      ctx.fillText(line, centerX, cursorY)
-    })
-    cursorY += statsFont * 1.6
+  for (const line of chipLines) {
+    drawChipLine(
+      ctx,
+      line,
+      centerX,
+      cursorY,
+      chipHeight,
+      chipGap,
+      '#f3f4f6',
+      'rgba(255, 255, 255, 0.14)',
+      `700 ${chipFont}px ${FONT}`,
+      chipPaddingX,
+      'center',
+    )
+    cursorY += chipHeight + unit * 0.6
   }
 
   ctx.textAlign = 'left'
   drawWatermark(ctx, canvasWidth, canvasHeight, unit, isPortrait ? 'center' : 'right')
+}
+
+// "Ticker": broadcast-style full-width bar — direction badge, symbol, PnL,
+// and stat chips inline. Sits at the very bottom for landscape (classic
+// lower-third) and up top for portrait, clear of captions/UI.
+function drawTickerStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo) {
+  const { isPortrait, isProfit, accent, unit, rows } = ctxInfo
+
+  const padX = unit * 2.4
+  const padY = unit * 1.5
+  const symbolFont = Math.round(unit * 2.1)
+  const pnlFont = Math.round(unit * 2.5)
+  const chipFont = Math.round(unit * 1.25)
+  const chipPaddingX = unit * 1.05
+  const chipGap = unit * 0.7
+  const chipHeight = chipFont * 2.1
+  const headerHeight = Math.max(symbolFont, pnlFont) * 1.3
+
+  const maxWidth = canvasWidth - padX * 2
+  const chipLines = layoutChips(ctx, rows, `700 ${chipFont}px ${FONT}`, maxWidth, chipPaddingX, chipGap)
+
+  const barHeight = padY * 2 + headerHeight + unit * 0.7 + chipLines.length * (chipHeight + unit * 0.45)
+  const barY = isPortrait ? unit * 2 : canvasHeight - barHeight
+
+  ctx.save()
+  const barGrad = ctx.createLinearGradient(0, barY, 0, barY + barHeight)
+  barGrad.addColorStop(0, 'rgba(9, 10, 14, 0.55)')
+  barGrad.addColorStop(0.2, 'rgba(7, 8, 11, 0.85)')
+  barGrad.addColorStop(1, 'rgba(4, 5, 7, 0.92)')
+  ctx.fillStyle = barGrad
+  ctx.fillRect(0, barY, canvasWidth, barHeight)
+  ctx.restore()
+
+  ctx.save()
+  ctx.shadowColor = accent
+  ctx.shadowBlur = unit * 1.6
+  ctx.fillStyle = accent
+  ctx.fillRect(0, barY, canvasWidth, unit * 0.22)
+  ctx.restore()
+
+  let cursorY = barY + padY
+  let cursorX = padX
+  ctx.textBaseline = 'middle'
+  const headerMidY = cursorY + headerHeight / 2
+
+  const badgeR = headerHeight * 0.3
+  drawDirectionBadge(ctx, cursorX, headerMidY, badgeR, trade.direction)
+  cursorX += badgeR * 2 + unit * 1
+
+  withTextShadow(ctx, () => {
+    ctx.font = `800 ${symbolFont}px ${FONT}`
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(trade.symbol || 'SYMBOL', cursorX, headerMidY)
+  })
+  cursorX += ctx.measureText(trade.symbol || 'SYMBOL').width + unit * 1.6
+
+  withTextShadow(ctx, () => {
+    ctx.font = `800 ${pnlFont}px ${FONT}`
+    ctx.fillStyle = accent
+    const arrow = isProfit ? '▲' : '▼'
+    ctx.fillText(`${arrow} ${formatCurrency(trade.pnl)}`, cursorX, headerMidY)
+  })
+
+  cursorY += headerHeight + unit * 0.7
+  ctx.textBaseline = 'top'
+
+  for (const line of chipLines) {
+    drawChipLine(
+      ctx,
+      line,
+      padX,
+      cursorY,
+      chipHeight,
+      chipGap,
+      '#e5e7eb',
+      'rgba(255, 255, 255, 0.12)',
+      `700 ${chipFont}px ${FONT}`,
+      chipPaddingX,
+      'left',
+    )
+    cursorY += chipHeight + unit * 0.45
+  }
+
+  drawWatermark(ctx, canvasWidth, canvasHeight, unit, 'right')
 }
 
 /**
@@ -376,16 +578,19 @@ function drawOverlay(ctx, canvasWidth, canvasHeight, trade, style = 'Minimal', o
         : canvasHeight > canvasWidth
   const isProfit = Number(trade.pnl) >= 0
   const accent = isProfit ? '#4ade80' : '#f87171'
-  const pillBg = isProfit ? '#86efac' : '#fca5a5'
+  const pillFrom = isProfit ? '#bbf7d0' : '#fecaca'
+  const pillTo = isProfit ? '#4ade80' : '#f87171'
+  const glow = isProfit ? 'rgba(74, 222, 128, 0.55)' : 'rgba(248, 113, 113, 0.55)'
   // Scale off the constraining dimension so text stays proportionate in
   // both landscape (16:9-ish) and portrait (9:16-ish, e.g. TikTok) video.
   const unit = Math.min(canvasWidth, canvasHeight) * 0.02
   const rows = buildStatRows(trade)
 
-  const ctxInfo = { isPortrait, isProfit, accent, pillBg, unit, rows }
+  const ctxInfo = { isPortrait, isProfit, accent, pillFrom, pillTo, glow, unit, rows }
 
   if (style === 'Card') drawCardStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
   else if (style === 'Bold') drawBoldStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
+  else if (style === 'Ticker') drawTickerStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
   else drawMinimalStyle(ctx, canvasWidth, canvasHeight, trade, ctxInfo)
 }
 
